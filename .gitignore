@@ -1,0 +1,13 @@
+build
+dist
+venv
+.idea
+node_modules/
+public/
+.deploy_git/
+db.json
+*.swp
+config.yaml
+.vscode
+__pycache__
+*.pyc

@@ -1,0 +1,10 @@
+output : "./build"
+url : "#REPLACED:https://bolder-oak-f58.notion.site/Test-Blog-eb8445c955144ea5a4ff0b9d97c488b0"
+token : "#TODO:notion-sdk-python API"
+match_patterns:
+  "Test notion-down":
+    - ^NotionDown.*
+    - ^MarkDown.*
+    - ^Hexo.*
+
+token_v2: "#REPLACED:notion-py token_v2 API"

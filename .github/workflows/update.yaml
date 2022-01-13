@@ -1,0 +1,208 @@
+name: notion-down
+
+# 1) update notion to hexo source(but not commit), and then public to master
+# 2) update source posts if source branch updated
+# 3) weekly update for notion
+
+on:
+  schedule:
+    - cron: '0 0 */7 * *'
+  push:
+    branches:
+      - notion-down
+      - source
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    #https://github.community/t/delete-old-workflow-results/16152/44
+    steps:
+      - name: ✂ Remove runs of the cleanup workflow itself
+        uses: actions/github-script@v4 # https://github.com/actions/github-script
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pages = 5;
+
+            let runs_to_delete = [];
+
+            for (let page = 0; page < pages; page += 1) {
+              let response = await github.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                page: page,
+                per_page: 100,
+                repo: context.repo.repo,
+                workflow_id: 'update.yaml'
+              });
+
+              if (response.data.workflow_runs.length > 0) {
+                for (const run of response.data.workflow_runs) {
+                    runs_to_delete.push([run.id, run.name]);
+                }
+              }
+            }
+
+            for (const run of runs_to_delete) {
+              console.log(`[Deleting] Run id ${run[0]} of '${run[1]}'.`);
+              try {
+                await github.actions.deleteWorkflowRun({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run[0]
+                });
+              } catch (error) {
+                // ignore errors
+              }
+            }
+
+  build:
+    needs: prune
+    runs-on: ubuntu-latest
+    steps:
+      # store data in
+      - name: checkout
+        uses: actions/checkout@v2.4.0
+        with:
+          ref: notion-down
+
+      - name: setup python
+        uses: actions/setup-python@v2.3.1
+        with:
+          # Version range or exact version of a Python version to use, using SemVer's version range syntax.
+          python-version: 3.8 # optional, default is 3.x
+          # Used to specify a package manager for caching in the default directory. Supported values: pip, pipenv.
+          cache: pip # optional
+          # The target architecture (x86, x64) of the Python interpreter.
+          architecture: x64 # optional
+      - run: |
+          pip install -r requirements.txt
+
+      - name: build markdown from notion and merge into source
+        run: |
+          git checkout notion-down
+          export LANG="en_US.UTF-8"
+          export LC_ALL="en_US.UTF-8"
+          PYTHONPATH=./ python main.py
+          echo "Generated MD file:\n"
+          echo "\n---\n"
+          pwd && ls
+
+      - name: checkout
+        uses: actions/checkout@v2.4.0
+        with:
+          ref: source
+          clean: false
+
+      - name: mv markdown files and check conflicts
+        run: |
+          pwd && ls
+          # diff --brief --recursive --new-file build source # see difference
+          # cp -rv build/. source/
+          ls ./build
+          rsync -avu ./build/ source
+      # - name: prepare ssh
+      #   run : |
+      #       pwd && whoami && echo home is $HOME
+      #       git config --global user.email "gongxuncd@gmail.com"
+      #       git config --global user.name "github_action"
+      #       mkdir -p $HOME/.ssh/
+      #       echo ${{ secrets.SSH_KEY }} > $HOME/.ssh/id_rsa
+      #       chmod 600 /root/.ssh/id_rsa
+      #       touch $HOME/.ssh/known_hosts
+      #       ssh-keyscan -t rsa github.com >> $HOME/.ssh/known_hosts
+      #       ssh-keyscan -t rsa xun-gong.com >> $HOME/.ssh/known_hosts
+      #       ssh-keyscan -t rsa dorm.xun-gong.com >> $HOME/.ssh/known_hosts
+      #       ssh-keyscan -t rsa blog.xun-gong.com >> $HOME/.ssh/known_hosts
+      
+      - name: Archive production artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: source
+          path: |
+            build/
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_KEY }}
+          name: id_rsa # optional
+          known_hosts: ${{ secrets.KNOWN_HOSTS }}
+          config: ${{ secrets.CONFIG }} # ssh_config; optional
+          if_key_exists: fail # replace / ignore / fail; optional (defaults to fail)
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v2.5.1
+        with:
+          # Set always-auth in npmrc
+          # Version Spec of the version to use.  Examples: 12.x, 10.15.1, >=10.15.0
+          node-version: 16
+
+      - name: prepare hexo environment and deploy site
+        run: |
+          git config --global user.email "gongxuncd@gmail.com"
+          git config --global user.name "github_action"
+          git config --global init.defaultBranch source
+          npm install -g hexo-cli
+          npm install
+          hexo generate
+          hexo deploy
+
+      - name: Archive production artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: website
+          path: |
+            public/
+  
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: AutoModality/action-clean@v1
+      - name: checkout master
+        uses: actions/checkout@v2
+        with:
+          ref: master
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}-${{ github.sha }}
+          release_name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: true
+
+      - name: Archive production artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: website
+          path: public
+      - name: build project # This would actually build your project, using zip for an example artifact
+        run: |
+          zip --verbose -r blog public
+
+      - name: Upload Release Asset
+        id: upload-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
+          asset_path: ./blog.zip
+          asset_name: blog.zip
+          asset_content_type: application/zip
+
+      # - name: Rsync Deployments Action
+      #   uses: Burnett01/rsync-deployments@5.2
+      #   with:
+      #     switches: -avzr --delete --exclude="" --include="" --filter=""
+      #     path: .
+      #     remote_path: ${{ secrets.SERVER_TARGET }}
+      #     remote_host: ${{ secrets.SERVER_HOST }}
+      #     remote_port: ${{ secrets.SERVER_PORT }}
+      #     remote_user: ${{ secrets.SERVER_USER }}
+      #     remote_key: ${{ secrets.SSH_KEY }}

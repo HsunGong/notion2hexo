@@ -1,0 +1,5 @@
+notion==0.0.28
+requests==2.25.0
+tqdm
+git+https://github.com/raphodn/notion-py.git@master
+PyYAML
